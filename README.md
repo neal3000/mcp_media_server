@@ -30,7 +30,7 @@ python media_server.py --transport stdio
 
 **HTTP:**
 ```bash
-python media_server.py --transport http --host 0.0.0.0 --port 8000
+python media_server.py --transport http --host 0.0.0.0 --port 3000
 ```
 
 **HTTPS:**
@@ -51,14 +51,29 @@ python media_client.py --protocol stdio --command play --movie "example.mp4"
 
 **List movies via HTTP:**
 ```bash
-python media_client.py --protocol http --url http://localhost:8000/sse --command list
+python media_client.py --protocol http --url http://localhost:3000/sse --command list
 ```
 
 **Play movie via HTTPS:**
 ```bash
-python media_client.py --protocol https --url https://localhost:8443/sse \
+python media_client.py --protocol https --url https://localhost:3001/sse \
     --command play --movie "example.mp4"
 ```
+
+## Caddy for https
+pi5c.example.com:3001 {
+	tls /etc/caddy/certs/fullchain.pem /etc/caddy/certs/privkey.pem
+	reverse_proxy localhost:3000
+}
+in my case "pi5c.example.com" is public DNS entry with a local IP. There has got to be a better way,
+but it works for now. I have a wildcard cert for *.example.com which I copied locally 
+Copy the certs to  /etc/caddy/certs/ (create if missing) and change owner to caddy
+mkdir -p /etc/caddy/certs
+cp /etc/letsencrypt/live/example.com/fullchain.pem /etc/caddy/certs/
+cp /etc/letsencrypt/live/example.com/privkey.pem /etc/caddy/certs/
+chown caddy:caddy /etc/caddy/certs/*
+chmod 644 /etc/caddy/certs/fullchain.pem
+chmod 600 /etc/caddy/certs/privkey.pem
 
 ## Configuration
 
