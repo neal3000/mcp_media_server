@@ -1,0 +1,12 @@
+# MCP Media Server Requirements
+
+# Core MCP package
+mcp>=1.0.0
+
+# For HTTP/HTTPS transport (SSE)
+starlette>=0.27.0
+uvicorn>=0.23.0
+sse-starlette>=1.6.0
+
+# Optional: for better async support
+anyio>=3.0.0
