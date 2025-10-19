@@ -1,13 +1,13 @@
 # MCP Media Server
 
-A Model Context Protocol (MCP) server and client for listing and playing media files from `~/Media/MOVIES`. Supports stdio, HTTP, and HTTPS transports, compatible with Claude Desktop and n8n.
+A Model Context Protocol (MCP) server and client for listing and playing media files from `~/Media/MOVIES`. Supports stdio, HTTP, and HTTPS transports, compatible with Claude Desktop.
 
 ## Features
 
 - **List Movies**: Browse all media files in your Movies directory
 - **Play Movies**: Start playback using system default media player
 - **Multiple Transports**: stdio (for Claude Desktop), HTTP, and HTTPS
-- **Cross-Platform**: Works on Linux, macOS, and Windows
+- **Cross-Platform**: Works on Linux, ( later macOS, and Windows )
 
 ## Installation
 
@@ -34,14 +34,8 @@ python media_server.py --transport http --host 0.0.0.0 --port 8000
 ```
 
 **HTTPS:**
+there is no built in https (regardless of what said) use Caddy as reverse proxy to handle https and forwad http to media_server
 ```bash
-# Generate self-signed certificate (for testing)
-openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
-
-# Start server
-python media_server.py --transport https --host 0.0.0.0 --port 8443 \
-    --certfile cert.pem --keyfile key.pem
-```
 
 ### Client
 
@@ -99,7 +93,7 @@ Add to your Claude Desktop configuration (`claude_desktop_config.json`):
 ```
 
 ## n8n Integration
-
+UNTESTED
 For n8n, use the HTTP or HTTPS transport:
 
 1. Start the server with HTTP/HTTPS transport
@@ -111,8 +105,8 @@ For n8n, use the HTTP or HTTPS transport:
 The server will automatically detect and use available media players:
 
 **Linux:**
+- MPV (`mpv`)  this is the only player that works reliably
 - VLC (`vlc`)
-- MPV (`mpv`)
 - MPlayer (`mplayer`)
 - Or system default (`xdg-open`)
 
@@ -181,12 +175,10 @@ usage: media_server.py [-h] [--transport {stdio,http,https}] [--host HOST]
                        [--port PORT] [--certfile CERTFILE] [--keyfile KEYFILE]
 
 optional arguments:
-  --transport {stdio,http,https}
+  --transport {stdio,http}
                         Transport protocol to use (default: stdio)
   --host HOST          Host to bind to for HTTP/HTTPS (default: 127.0.0.1)
   --port PORT          Port to bind to for HTTP/HTTPS (default: 8000)
-  --certfile CERTFILE  SSL certificate file for HTTPS
-  --keyfile KEYFILE    SSL key file for HTTPS
 ```
 
 ## Client Command-Line Options
@@ -210,10 +202,9 @@ optional arguments:
 
 ### No media player found
 
-Install VLC or another supported media player:
+Install MPV or another supported media player:
 ```bash
-sudo apt install vlc  # Linux
-brew install vlc      # macOS
+sudo apt install mpv  # Linux
 ```
 
 ### Connection errors with HTTP/HTTPS
@@ -233,8 +224,6 @@ chmod 755 ~/Media/MOVIES
 ## Security Notes
 
 - The server only accesses files in the configured media directory
-- For production use with HTTPS, use proper SSL certificates (not self-signed)
-- Consider restricting the `--host` parameter to specific IPs in production
 - The server does not modify or delete any files
 
 ## License
