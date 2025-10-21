@@ -15,6 +15,7 @@ import json
 import tempfile
 from pathlib import Path
 from typing import Optional
+from difflib import SequenceMatcher
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -46,8 +47,92 @@ MEDIA_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m
 # MPV IPC socket path
 MPV_SOCKET = Path(tempfile.gettempdir()) / "mpv-ipc-socket"
 
-# Track current MPV process
+# Track current MPV process and playing file
 current_mpv_process = None
+currently_playing_file = None
+
+
+def fuzzy_match_filename(query: str, filename: str) -> float:
+    """
+    Calculate fuzzy match score between query and filename.
+    Returns a score between 0.0 (no match) and 1.0 (perfect match).
+    """
+    # Remove extension for matching
+    name_without_ext = Path(filename).stem.lower()
+    query_lower = query.lower()
+    
+    # Exact match (case insensitive)
+    if query_lower in name_without_ext or name_without_ext in query_lower:
+        return 1.0
+    
+    # Sequence matcher for similarity
+    return SequenceMatcher(None, query_lower, name_without_ext).ratio()
+
+
+def find_best_match(query: str, media_files: list) -> Optional[dict]:
+    """
+    Find the best matching media file for the given query using fuzzy matching.
+    Returns the file with the highest match score, or None if no good match found.
+    """
+    if not media_files:
+        return None
+    
+    best_match = None
+    best_score = 0.0
+    threshold = 0.3  # Minimum similarity threshold
+    
+    for file_info in media_files:
+        score = fuzzy_match_filename(query, file_info['name'])
+        if score > best_score and score >= threshold:
+            best_score = score
+            best_match = file_info
+    
+    return best_match
+
+
+def stop_current_playback() -> tuple[bool, str]:
+    """
+    Stop the currently playing media file if any.
+    """
+    global current_mpv_process, currently_playing_file
+    
+    if current_mpv_process is None:
+        return True, "No media currently playing"
+    
+    try:
+        # Try to gracefully stop via IPC first
+        if MPV_SOCKET.exists():
+            success, message = send_mpv_command(["quit"], expect_response=False)
+            if success:
+                # Give it a moment to close gracefully
+                try:
+                    current_mpv_process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    # Force kill if it doesn't close gracefully
+                    current_mpv_process.kill()
+                    current_mpv_process.wait()
+        else:
+            # Force kill if no IPC socket
+            current_mpv_process.kill()
+            current_mpv_process.wait()
+        
+        current_mpv_process = None
+        currently_playing_file = None
+        return True, "Playback stopped"
+        
+    except Exception as e:
+        # Fallback: try to kill the process
+        try:
+            if current_mpv_process:
+                current_mpv_process.kill()
+                current_mpv_process.wait()
+        except:
+            pass
+        finally:
+            current_mpv_process = None
+            currently_playing_file = None
+        
+        return False, f"Error stopping playback: {str(e)}"
 
 
 def send_mpv_command(command: list, expect_response: bool = True) -> tuple[bool, str]:
@@ -135,7 +220,7 @@ def play_media_file(filename: str, loop: bool = False) -> tuple[bool, str]:
     Returns:
         Tuple of (success: bool, message: str)
     """
-    global current_mpv_process
+    global current_mpv_process, currently_playing_file
 
     file_path = MEDIA_DIR / filename
 
@@ -144,6 +229,12 @@ def play_media_file(filename: str, loop: bool = False) -> tuple[bool, str]:
 
     if file_path.suffix.lower() not in MEDIA_EXTENSIONS:
         return False, f"Not a supported media file: {filename}"
+
+    # Stop currently playing file if any
+    if current_mpv_process is not None:
+        stop_success, stop_message = stop_current_playback()
+        if not stop_success:
+            print(f"Warning: Could not stop previous playback: {stop_message}", file=sys.stderr)
 
     try:
         # Remove old socket if it exists
@@ -167,6 +258,7 @@ def play_media_file(filename: str, loop: bool = False) -> tuple[bool, str]:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL
                 )
+                currently_playing_file = filename
                 return True, f"Playing {filename} with MPV (IPC enabled)"
 
             # Fallback to other players
@@ -176,6 +268,7 @@ def play_media_file(filename: str, loop: bool = False) -> tuple[bool, str]:
                     subprocess.Popen([player, str(file_path)],
                                    stdout=subprocess.DEVNULL,
                                    stderr=subprocess.DEVNULL)
+                    currently_playing_file = filename
                     return True, f"Playing {filename} with {player} (no IPC control)"
             return False, "No media player found (tried: mpv, vlc, mplayer, xdg-open)"
 
@@ -195,11 +288,13 @@ def play_media_file(filename: str, loop: bool = False) -> tuple[bool, str]:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL
                 )
+                currently_playing_file = filename
                 return True, f"Playing {filename} with MPV (IPC enabled)"
             else:
                 subprocess.Popen(['open', str(file_path)],
                                stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL)
+                currently_playing_file = filename
                 return True, f"Playing {filename} (no IPC control)"
 
         elif sys.platform == 'win32':  # Windows
@@ -218,9 +313,11 @@ def play_media_file(filename: str, loop: bool = False) -> tuple[bool, str]:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL
                 )
+                currently_playing_file = filename
                 return True, f"Playing {filename} with MPV (IPC enabled)"
             else:
                 os.startfile(str(file_path))
+                currently_playing_file = filename
                 return True, f"Playing {filename} (no IPC control)"
 
         else:
@@ -245,13 +342,13 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="play_movie",
-            description="Play a specific movie file using MPV with IPC control. Supports optional loop parameter.",
+            description="Play a specific movie file using MPV with IPC control. Supports fuzzy matching by name and optional loop parameter. If another movie is playing, it will be stopped first.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "filename": {
                         "type": "string",
-                        "description": "The name of the movie file to play (e.g., 'movie.mp4')"
+                        "description": "The name of the movie file to play (e.g., 'movie.mp4') or a partial name for fuzzy matching (e.g., 'superman' will match 'Superman.mp4')"
                     },
                     "loop": {
                         "type": "boolean",
@@ -342,6 +439,15 @@ async def list_tools() -> list[Tool]:
                 "properties": {},
                 "required": []
             }
+        ),
+        Tool(
+            name="get_current_playing",
+            description="Get the name of the currently playing media file, if any.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
         )
     ]
 
@@ -377,28 +483,51 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=response)]
 
     elif name == "play_movie":
-        filename = arguments.get("filename")
+        filename_query = arguments.get("filename")
         loop = arguments.get("loop", False)
 
-        if not filename:
+        if not filename_query:
             return [TextContent(
                 type="text",
                 text="Error: filename parameter is required"
             )]
 
-        success, message = play_media_file(filename, loop)
-
-        return [TextContent(
-            type="text",
-            text=message
-        )]
+        media_files = get_media_files()
+        
+        # First try exact match
+        exact_match = None
+        for file_info in media_files:
+            if file_info['name'].lower() == filename_query.lower():
+                exact_match = file_info
+                break
+        
+        if exact_match:
+            # Exact match found
+            success, message = play_media_file(exact_match['name'], loop)
+            return [TextContent(type="text", text=message)]
+        
+        # Try fuzzy matching
+        best_match = find_best_match(filename_query, media_files)
+        
+        if best_match:
+            success, message = play_media_file(best_match['name'], loop)
+            match_score = fuzzy_match_filename(filename_query, best_match['name'])
+            message += f"\n\nNote: Matched '{best_match['name']}' from query '{filename_query}' (confidence: {match_score:.2f})"
+            return [TextContent(type="text", text=message)]
+        else:
+            # No match found
+            available_files = "\n".join([f"- {f['name']}" for f in media_files])
+            return [TextContent(
+                type="text",
+                text=f"No media file found matching '{filename_query}'. Available files:\n{available_files}"
+            )]
 
     elif name == "pause_playback":
         success, message = send_mpv_command(["cycle", "pause"])
         return [TextContent(type="text", text=message)]
 
     elif name == "stop_playback":
-        success, message = send_mpv_command(["quit"])
+        success, message = stop_current_playback()
         return [TextContent(type="text", text=message)]
 
     elif name == "seek_forward":
@@ -426,6 +555,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     elif name == "restart_playback":
         success, message = send_mpv_command(["seek", 0, "absolute"])
         return [TextContent(type="text", text=message)]
+
+    elif name == "get_current_playing":
+        if currently_playing_file:
+            return [TextContent(
+                type="text",
+                text=f"Currently playing: {currently_playing_file}"
+            )]
+        else:
+            return [TextContent(
+                type="text",
+                text="No media is currently playing"
+            )]
 
     else:
         return [TextContent(
@@ -562,3 +703,4 @@ Examples:
 
 if __name__ == "__main__":
     main()
+
